@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+service Raft {
+    rpc AppendEntries (AppendEntriesReq) returns (AppendEntriesResp);
+    rpc RequestVote (RequestVoteReq) returns (RequestVoteResp);
+}
+
+message LogEntry {
+    int32 term=1;
+    int32 index=2;
+    bytes payload=3;
+}
+
+message AppendEntriesReq {
+    int32 term=1;
+    int32 leaderId=2;
+    int32 prevLogIndex=3;
+    int32 prevLogTerm=4;
+    repeated LogEntry entries=5;
+    int32 leaderCommit=6;
+}
+
+message AppendEntriesResp {
+    int32 term=1;
+    bool success=2;
+}
+
+message RequestVoteReq {
+    int32 term=1;
+    int32 candidataId=2;
+    int32 lastLogIndex=3;
+    int32 lastLogTerm=4;
+}
+
+message RequestVoteResp {
+    int32 term=1;
+    bool voteGranted=2;
+}
+
+//protoc -I ./ --cpp_out=. ./message.proto
+//protoc -I ./ --grpc_out=. --plugin=protoc-gen-grpc=`which grpc_cpp_plugin` ./message.proto

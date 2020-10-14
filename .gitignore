@@ -1,0 +1,5 @@
+.vscode/
+*.o
+main
+*.pb.cc
+*.pb.h
