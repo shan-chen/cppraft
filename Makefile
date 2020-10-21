@@ -15,7 +15,7 @@ vpath %.proto $(PROTOS_PATH)
 
 all: main
 
-main: message.pb.o message.grpc.pb.o main.o node.o
+main: message.pb.o message.grpc.pb.o common.o main.o node.o
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 .PRECIOUS: message.grpc.pb.cc

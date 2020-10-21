@@ -1,3 +1,6 @@
+#ifndef COMMON_H
+#define COMMON_H
+
 #include <string>
 #include <vector>
 #include <memory>
@@ -6,18 +9,56 @@
 #include <grpcpp/ext/proto_server_reflection_plugin.h>
 #include "spdlog/spdlog.h"
 #include "message.grpc.pb.h"
+#include "json.hpp"
 
-struct Peer
+using json = nlohmann::json;
+
+namespace cppraft
 {
-    std::string address;
-    int number;
-    std::unique_ptr<Raft::Stub> stub;
-    Peer(){};
-    Peer(std::string a, int n) : address(a), number(n){};
-    Peer(Peer &&other)
+    struct Peer
     {
-        address = other.address;
-        number = other.number;
-        stub = std::move(other.stub);
+        std::string address;
+        int number;
+        std::unique_ptr<Raft::Stub> stub;
+        Peer(){};
+        Peer(std::string a, int n) : address(a), number(n){};
+        Peer(Peer &&other)
+        {
+            address = other.address;
+            number = other.number;
+            stub = std::move(other.stub);
+        };
     };
-};
+
+    enum Status
+    {
+        LEADER = 1,
+        CANDIDATE = 2,
+        FOLLOWER = 3,
+    };
+
+    enum MessageType
+    {
+        REQUESTVOTE = 1,
+        APPENDENTRIES = 2,
+    };
+
+    struct Message
+    {
+        MessageType type;
+    };
+
+    const int CANDIDATETIMEOUT = 300;
+    const int LEADERTIMEOUT = 500;
+    const int CANDIDATERANDTIME = 500;
+
+    struct peerConfig
+    {
+        std::string address;
+        int number;
+    };
+
+    void from_json(const json &j, peerConfig &p);
+} // namespace cppraft
+
+#endif

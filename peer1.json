@@ -1,0 +1,14 @@
+{
+    "address": "localhost:5001",
+    "number": 1,
+    "peers": [
+        {
+            "address": "localhost:5002",
+            "number": 2
+        },
+        {
+            "address": "localhost:5003",
+            "number": 3
+        }
+    ]
+}
