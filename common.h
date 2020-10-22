@@ -48,9 +48,9 @@ namespace cppraft
         MessageType type;
     };
 
-    const int CANDIDATETIMEOUT = 300;
-    const int LEADERTIMEOUT = 500;
-    const int CANDIDATERANDTIME = 500;
+    const int TICKINTERVAL = 100;
+    const int HEARTBEATTIMEOUT = 3;
+    const int LEADERTIMEOUT = 5;
 
     struct peerConfig
     {

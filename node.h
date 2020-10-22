@@ -25,38 +25,42 @@ namespace cppraft
 
         void Start();
         void Stop();
+        void Tick();
 
     private:
+        void resetTick();
         void startRpc();
-        void mainLoop();
+        // void mainLoop();
         void asCandidate();
         void asLeader();
         void asFollower();
         void startCampaign();
-        void sendAppendEntries(std::unique_ptr<Raft::Stub> &stub);
-        void sendRequestVote(int number, std::unique_ptr<Raft::Stub> &stub);
+        void sendAppendEntries(const AppendEntriesReq &req, Peer &peer);
+        void sendRequestVote(const RequestVoteReq &req, Peer &peer);
+        void sendHeartBeat();
         void sendMessage(Message &msg, std::unique_ptr<Raft::Stub> &stub);
 
-        std::mutex mu;
-        int currentTerm;
-        int votedFor;
-        std::vector<LogEntry> logs;
-        int commitIndex;
-        int lastApplied;
+        std::mutex m_mu;
+        int m_currentTerm;
+        int m_votedFor;
+        std::vector<LogEntry> m_logs;
+        int m_commitIndex;
+        int m_lastApplied;
 
         // only for leader
-        std::vector<int> nextIndex;
-        std::vector<int> matchIndex;
+        std::vector<int> m_nextIndex;
+        std::vector<int> m_matchIndex;
 
         std::unique_ptr<grpc::Server> m_server;
-        std::thread m_t;
         std::vector<Peer> m_peers;
         std::string m_address;
         int m_number;
         Status m_status;
         int m_candidate_count;
-        std::promise<void> m_candidate_promise;
-        std::promise<void> m_heartbeat_promise;
+        int m_elapsed;
+        int m_election_timeout;
+        // std::promise<void> m_candidate_promise;
+        // std::promise<void> m_heartbeat_promise;
     };
 }; // namespace cppraft
 #endif
