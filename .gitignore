@@ -3,3 +3,4 @@
 main
 *.pb.cc
 *.pb.h
+client

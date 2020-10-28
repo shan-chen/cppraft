@@ -8,6 +8,8 @@
 #include <chrono>
 #include <ctime>
 #include <cstdlib>
+#include <algorithm>
+#include <unordered_map>
 
 #include "common.h"
 
@@ -22,23 +24,27 @@ namespace cppraft
 
         grpc::Status AppendEntries(grpc::ServerContext *ctx, const AppendEntriesReq *req, AppendEntriesResp *resp) override;
         grpc::Status RequestVote(grpc::ServerContext *ctx, const RequestVoteReq *req, RequestVoteResp *resp) override;
+        grpc::Status ClientCommandRequest(grpc::ServerContext *ctx, const ClientCommandRequestReq *req, ClientCommandRequestResp *resp) override;
 
         void Start();
         void Stop();
         void Tick();
+        void Apply();
+        std::vector<LogEntry> GetLogs();
 
     private:
         void resetTick();
-        void startRpc();
+        void startRpc(std::promise<void> &p);
         // void mainLoop();
         void asCandidate();
         void asLeader();
         void asFollower();
         void startCampaign();
-        void sendAppendEntries(const AppendEntriesReq &req, Peer &peer);
-        void sendRequestVote(const RequestVoteReq &req, Peer &peer);
+        void sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat);
+        void sendRequestVote(RequestVoteReq req, int i);
         void sendHeartBeat();
-        void sendMessage(Message &msg, std::unique_ptr<Raft::Stub> &stub);
+        void adjustCommitIndex();
+        void waitApplied(int index);
 
         std::mutex m_mu;
         int m_currentTerm;
@@ -59,8 +65,8 @@ namespace cppraft
         int m_candidate_count;
         int m_elapsed;
         int m_election_timeout;
-        // std::promise<void> m_candidate_promise;
-        // std::promise<void> m_heartbeat_promise;
+
+        std::unordered_map<int, std::promise<void>> m_applied;
     };
 }; // namespace cppraft
 #endif

@@ -13,9 +13,12 @@ PROTOS_PATH = ./
 
 vpath %.proto $(PROTOS_PATH)
 
-all: main
+all: main client
 
-main: message.pb.o message.grpc.pb.o common.o main.o node.o
+client: client.o message.pb.o message.grpc.pb.o
+	$(CXX) $^ $(LDFLAGS) -o $@
+
+main: node.h message.pb.o message.grpc.pb.o common.o main.o node.o
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 .PRECIOUS: message.grpc.pb.cc
@@ -27,4 +30,4 @@ message.pb.cc: message.proto
 	$(PROTOC) -I $(PROTOS_PATH) --cpp_out=. $<
 
 clean:
-	rm -f *.o *.pb.cc *.pb.h main
+	rm -f *.o *.pb.cc *.pb.h main client

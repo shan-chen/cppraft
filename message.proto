@@ -3,6 +3,7 @@ syntax = "proto3";
 service Raft {
     rpc AppendEntries (AppendEntriesReq) returns (AppendEntriesResp);
     rpc RequestVote (RequestVoteReq) returns (RequestVoteResp);
+    rpc ClientCommandRequest(ClientCommandRequestReq) returns (ClientCommandRequestResp);
 }
 
 message LogEntry {
@@ -35,6 +36,14 @@ message RequestVoteReq {
 message RequestVoteResp {
     int32 term=1;
     bool voteGranted=2;
+}
+
+message ClientCommandRequestReq {
+    bytes payload=1;
+}
+
+message ClientCommandRequestResp {
+    bool success=1;
 }
 
 //protoc -I ./ --cpp_out=. ./message.proto
