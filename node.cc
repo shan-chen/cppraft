@@ -21,6 +21,7 @@ Node::~Node()
 
 void Node::Start()
 {
+    m_stop = false;
     std::promise<void> p;
     std::thread rpc(&Node::startRpc, this, std::ref(p));
     p.get_future().wait();
@@ -46,13 +47,11 @@ void Node::Start()
         else
             spdlog::error("failed to connect to peer {} {}", peer.number, peer.address);
     }
-    std::this_thread::sleep_for(std::chrono::seconds(1));
     resetTick();
     std::thread tick(&Node::Tick, this);
-    // mainLoop();
     asFollower();
-    rpc.join();
-    tick.join();
+    rpc.detach();
+    tick.detach();
 }
 
 void Node::Stop()
@@ -60,17 +59,27 @@ void Node::Stop()
     if (m_server == nullptr)
         return;
     m_server->Shutdown();
+    m_stop = true;
     spdlog::info("node stop");
 }
 
 void Node::Tick()
 {
-    while (true)
+    while (!m_stop)
     {
         m_elapsed++;
         switch (m_status)
         {
         case FOLLOWER:
+        case PRECANDIDATE:
+            if (m_elapsed >= m_election_timeout)
+            {
+                m_status = PRECANDIDATE;
+                resetTick();
+                asPreCandidate();
+            }
+            break;
+
         case CANDIDATE:
             if (m_elapsed >= m_election_timeout)
             {
@@ -135,28 +144,28 @@ void Node::startRpc(std::promise<void> &p)
     spdlog::debug("startRpc quit");
 }
 
-// void Node::mainLoop()
-// {
-//     while (true)
-//     {
-//         switch (m_status)
-//         {
-//         case FOLLOWER:
-//             asFollower();
-//             break;
-//         case CANDIDATE:
-//             asCandidate();
-//             break;
-//         case LEADER:
-//             asLeader();
-//             break;
-//         }
-//     }
-// }
-
 void Node::asFollower()
 {
     spdlog::debug("become FOLLOWER");
+}
+
+void Node::asPreCandidate()
+{
+    spdlog::debug("become PRECANDIDATE");
+    m_mu.lock();
+    m_precandidate_count = 1;
+    m_votedFor = m_number;
+    PreVoteReq req;
+    req.set_term(m_currentTerm + 1);
+    req.set_precandidateid(m_number);
+    req.set_lastlogindex(m_logs.back().index());
+    req.set_lastlogterm(m_logs.back().term());
+    m_mu.unlock();
+    for (int i = 0; i < m_peers.size(); ++i)
+    {
+        std::thread t(&Node::sendPreVote, this, req, i);
+        t.detach();
+    }
 }
 
 void Node::asCandidate()
@@ -168,7 +177,7 @@ void Node::asCandidate()
     m_votedFor = m_number;
     RequestVoteReq req;
     req.set_term(m_currentTerm);
-    req.set_candidataid(m_number);
+    req.set_candidateid(m_number);
     req.set_lastlogindex(m_logs.back().index());
     req.set_lastlogterm(m_logs.back().term());
     spdlog::debug("send RequestVote at term {}", m_currentTerm);
@@ -197,7 +206,6 @@ void Node::sendHeartBeat()
     m_mu.unlock();
     for (int i = 0; i < m_peers.size(); ++i)
     {
-
         std::thread t(&Node::sendAppendEntries, this, req, i, true);
         t.detach();
     }
@@ -283,6 +291,35 @@ void Node::sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat)
     }
 }
 
+void Node::sendPreVote(PreVoteReq req, int i)
+{
+    if (m_peers[i].stub == nullptr)
+        return;
+    PreVoteResp resp;
+    grpc::ClientContext ctx;
+    grpc::Status s = m_peers[i].stub->PreVote(&ctx, req, &resp);
+    if (!s.ok())
+    {
+        spdlog::error("preVote rpc failed with code {} and message {}", s.error_code(), s.error_message());
+        return;
+    }
+
+    std::unique_lock<std::mutex> lock(m_mu);
+
+    if (resp.term() > m_currentTerm)
+        updateTerm(resp.term());
+    else if (resp.votegranted())
+    {
+        spdlog::debug("receive prevote from {}", m_peers[i].number);
+        m_precandidate_count++;
+        if (m_precandidate_count == ((m_peers.size() + 1) / 2) + 1)
+        {
+            m_status = CANDIDATE;
+            asCandidate();
+        }
+    }
+}
+
 void Node::adjustCommitIndex()
 {
     m_mu.lock();
@@ -300,6 +337,20 @@ void Node::adjustCommitIndex()
             m_commitIndex = index;
     }
     m_mu.unlock();
+}
+
+// this method should be called with lock
+void Node::updateTerm(int term)
+{
+    m_currentTerm = term;
+    m_status = FOLLOWER;
+    m_votedFor = -1;
+}
+
+// this method should be called with lock
+bool Node::logsMoreUpdate(int term, int index)
+{
+    return m_logs.back().term() < term || (m_logs.back().term() == term && m_logs.back().index() <= index);
 }
 
 void Node::waitApplied(int index)
@@ -376,36 +427,27 @@ grpc::Status Node::AppendEntries(grpc::ServerContext *ctx, const AppendEntriesRe
 
 grpc::Status Node::RequestVote(grpc::ServerContext *ctx, const RequestVoteReq *req, RequestVoteResp *resp)
 {
-    m_mu.lock();
+    std::unique_lock<std::mutex> lock(m_mu);
     if (req->term() < m_currentTerm)
     {
-        m_mu.unlock();
         resp->set_votegranted(false);
         resp->set_term(m_currentTerm);
         return grpc::Status::OK;
     }
 
     if (req->term() > m_currentTerm)
-    {
-        m_currentTerm = req->term();
-        m_status = FOLLOWER;
-        m_votedFor = -1;
-    }
+        updateTerm(req->term());
 
     resp->set_term(req->term());
-    if (m_votedFor == -1)
+    if (m_votedFor == -1 && logsMoreUpdate(req->lastlogterm(), req->lastlogindex()))
     {
-        if (m_logs.back().term() < req->lastlogterm() || (m_logs.back().term() == req->lastlogterm() && m_logs.back().index() <= req->lastlogindex()))
-        {
-            resp->set_votegranted(true);
-            m_votedFor = req->candidataid();
-            resetTick();
-            spdlog::debug("vote for {} at term {}", req->candidataid(), req->term());
-        }
-        else
-            resp->set_votegranted(false);
+        resp->set_votegranted(true);
+        m_votedFor = req->candidateid();
+        resetTick();
+        spdlog::debug("vote for {} at term {}", req->candidateid(), req->term());
     }
-    m_mu.unlock();
+    else
+        resp->set_votegranted(false);
     return grpc::Status::OK;
 }
 
@@ -438,5 +480,31 @@ grpc::Status Node::ClientCommandRequest(grpc::ServerContext *ctx, const ClientCo
     }
     waitApplied(log.index());
     resp->set_success(true);
+    return grpc::Status::OK;
+}
+
+grpc::Status Node::PreVote(grpc::ServerContext *ctx, const PreVoteReq *req, PreVoteResp *resp)
+{
+    std::unique_lock<std::mutex> lock(m_mu);
+    if (req->term() < m_currentTerm)
+    {
+        resp->set_votegranted(false);
+        resp->set_term(m_currentTerm);
+        return grpc::Status::OK;
+    }
+
+    if (req->term() > m_currentTerm)
+        updateTerm(req->term());
+
+    resp->set_term(req->term());
+    if (m_votedFor == -1 && logsMoreUpdate(req->lastlogterm(), req->lastlogindex()))
+    {
+        resp->set_votegranted(true);
+        m_votedFor = req->precandidateid();
+        resetTick();
+        spdlog::debug("vote for {} at term {}", req->precandidateid(), req->term());
+    }
+    else
+        resp->set_votegranted(false);
     return grpc::Status::OK;
 }

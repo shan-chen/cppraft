@@ -35,6 +35,7 @@ namespace cppraft
         LEADER = 1,
         CANDIDATE = 2,
         FOLLOWER = 3,
+        PRECANDIDATE = 4,
     };
 
     enum MessageType

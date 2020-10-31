@@ -42,11 +42,14 @@ int main()
     spdlog::set_level(spdlog::level::debug);
 
     Client client;
-    std::vector<std::string> dict{"aaa", "bbb", "ccc"};
+    std::vector<std::string> dict{"aaa", "bbb", "ccc", "ddd", "eee"};
+
     for (auto &p : dict)
     {
-        client.Request(p);
-        std::this_thread::sleep_for(std::chrono::seconds(2));
+        std::thread t(&Client::Request, &client, p);
+        t.detach();
     }
+
+    std::this_thread::sleep_for(std::chrono::seconds(5));
     return 0;
 }
