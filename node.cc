@@ -51,7 +51,7 @@ void Node::Start()
     std::thread tick(&Node::Tick, this);
     asFollower();
     rpc.detach();
-    tick.detach();
+    tick.join();
 }
 
 void Node::Stop()
@@ -103,7 +103,7 @@ void Node::Tick()
 // apply to state machine
 void Node::Apply()
 {
-    m_mu.lock();
+    std::unique_lock<std::mutex> lock(m_mu);
     while (m_commitIndex > m_lastApplied)
     {
         spdlog::debug("apply {}", m_lastApplied + 1);
@@ -113,7 +113,6 @@ void Node::Apply()
             m_applied[m_lastApplied].set_value();
         }
     }
-    m_mu.unlock();
 }
 
 std::vector<LogEntry> Node::GetLogs()
@@ -152,7 +151,7 @@ void Node::asFollower()
 void Node::asPreCandidate()
 {
     spdlog::debug("become PRECANDIDATE");
-    m_mu.lock();
+    std::unique_lock<std::mutex> lock(m_mu);
     m_precandidate_count = 1;
     m_votedFor = m_number;
     PreVoteReq req;
@@ -160,7 +159,7 @@ void Node::asPreCandidate()
     req.set_precandidateid(m_number);
     req.set_lastlogindex(m_logs.back().index());
     req.set_lastlogterm(m_logs.back().term());
-    m_mu.unlock();
+    lock.unlock();
     for (int i = 0; i < m_peers.size(); ++i)
     {
         std::thread t(&Node::sendPreVote, this, req, i);
@@ -171,7 +170,7 @@ void Node::asPreCandidate()
 void Node::asCandidate()
 {
     spdlog::debug("become CANDIDATE");
-    m_mu.lock();
+    std::unique_lock<std::mutex> lock(m_mu);
     m_candidate_count = 1;
     m_currentTerm++;
     m_votedFor = m_number;
@@ -181,7 +180,7 @@ void Node::asCandidate()
     req.set_lastlogindex(m_logs.back().index());
     req.set_lastlogterm(m_logs.back().term());
     spdlog::debug("send RequestVote at term {}", m_currentTerm);
-    m_mu.unlock();
+    lock.unlock();
     for (int i = 0; i < m_peers.size(); ++i)
     {
         std::thread t(&Node::sendRequestVote, this, req, i);
@@ -196,14 +195,14 @@ void Node::asLeader()
 
 void Node::sendHeartBeat()
 {
+    std::unique_lock<std::mutex> lock(m_mu);
     m_elapsed = 0;
     //spdlog::debug("send heartbeat at term {}", m_currentTerm);
-    m_mu.lock();
     AppendEntriesReq req;
     req.set_leaderid(m_number);
     req.set_term(m_currentTerm);
     req.set_leadercommit(m_commitIndex);
-    m_mu.unlock();
+    lock.unlock();
     for (int i = 0; i < m_peers.size(); ++i)
     {
         std::thread t(&Node::sendAppendEntries, this, req, i, true);
@@ -224,14 +223,10 @@ void Node::sendRequestVote(RequestVoteReq req, int i)
         return;
     }
 
-    m_mu.lock();
+    std::unique_lock<std::mutex> lock(m_mu);
 
     if (resp.term() > m_currentTerm)
-    {
-        m_currentTerm = resp.term();
-        m_status = FOLLOWER;
-        m_votedFor = -1;
-    }
+        updateTerm(resp.term());
     else if (resp.votegranted())
     {
         spdlog::debug("receive vote from {}", m_peers[i].number);
@@ -242,7 +237,6 @@ void Node::sendRequestVote(RequestVoteReq req, int i)
             asLeader();
         }
     }
-    m_mu.unlock();
 }
 
 void Node::sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat)
@@ -270,11 +264,10 @@ void Node::sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat)
         spdlog::error("appendEntries rpc failed with code {} and message {}", s.error_code(), s.error_message());
         return;
     }
+    std::unique_lock<std::mutex> lock(m_mu);
     if (resp.term() > m_currentTerm)
     {
-        m_currentTerm = resp.term();
-        m_votedFor = -1;
-        m_status = FOLLOWER;
+        updateTerm(resp.term());
         return;
     }
     if (resp.success())
@@ -282,11 +275,13 @@ void Node::sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat)
         m_nextIndex[i] += req.entries().size();
         m_matchIndex[i] += req.entries().size();
         adjustCommitIndex();
+        lock.unlock();
         Apply();
     }
     else
     {
         m_nextIndex[i]--;
+        lock.unlock();
         sendAppendEntries(req, i, false);
     }
 }
@@ -315,14 +310,15 @@ void Node::sendPreVote(PreVoteReq req, int i)
         if (m_precandidate_count == ((m_peers.size() + 1) / 2) + 1)
         {
             m_status = CANDIDATE;
+            lock.unlock();
             asCandidate();
         }
     }
 }
 
+// this method should be called with lock
 void Node::adjustCommitIndex()
 {
-    m_mu.lock();
     for (int index = m_commitIndex + 1; index < m_logs.size(); ++index)
     {
         int count = 0;
@@ -336,7 +332,6 @@ void Node::adjustCommitIndex()
         if (m_logs[index].term() == m_currentTerm)
             m_commitIndex = index;
     }
-    m_mu.unlock();
 }
 
 // this method should be called with lock
@@ -361,20 +356,16 @@ void Node::waitApplied(int index)
 
 grpc::Status Node::AppendEntries(grpc::ServerContext *ctx, const AppendEntriesReq *req, AppendEntriesResp *resp)
 {
-    m_mu.lock();
+    std::unique_lock<std::mutex> lock(m_mu);
     if (req->term() < m_currentTerm)
     {
         resp->set_success(false);
         resp->set_term(m_currentTerm);
-        m_mu.unlock();
         return grpc::Status::OK;
     }
 
     if (req->term() > m_currentTerm)
-    {
-        m_currentTerm = req->term();
-        m_votedFor = -1;
-    }
+        updateTerm(req->term());
 
     m_status = FOLLOWER;
     resetTick();
@@ -383,14 +374,12 @@ grpc::Status Node::AppendEntries(grpc::ServerContext *ctx, const AppendEntriesRe
     if (req->entries().size() == 0)
     {
         resp->set_success(true);
-        m_mu.unlock();
         return grpc::Status::OK;
     }
 
     if (m_logs.size() < req->prevlogindex() || m_logs[req->prevlogindex()].term() != req->prevlogterm())
     {
         resp->set_success(false);
-        m_mu.unlock();
         return grpc::Status::OK;
     }
 
@@ -416,12 +405,10 @@ grpc::Status Node::AppendEntries(grpc::ServerContext *ctx, const AppendEntriesRe
     if (req->leadercommit() > m_commitIndex)
     {
         m_commitIndex = std::min(req->leadercommit(), m_logs.back().index());
-        m_mu.unlock();
+        lock.unlock();
         std::thread t(&Node::Apply, this);
         t.detach();
     }
-    else
-        m_mu.unlock();
     return grpc::Status::OK;
 }
 
@@ -443,7 +430,9 @@ grpc::Status Node::RequestVote(grpc::ServerContext *ctx, const RequestVoteReq *r
     {
         resp->set_votegranted(true);
         m_votedFor = req->candidateid();
+        m_status = FOLLOWER;
         resetTick();
+        asFollower();
         spdlog::debug("vote for {} at term {}", req->candidateid(), req->term());
     }
     else
@@ -459,7 +448,7 @@ grpc::Status Node::ClientCommandRequest(grpc::ServerContext *ctx, const ClientCo
         return grpc::Status::OK;
     }
     LogEntry log;
-    m_mu.lock();
+    std::unique_lock<std::mutex> lock(m_mu);
     log.set_term(m_currentTerm);
     log.set_index(m_logs.size());
     log.set_payload(req->payload());
@@ -468,10 +457,9 @@ grpc::Status Node::ClientCommandRequest(grpc::ServerContext *ctx, const ClientCo
     request.set_leadercommit(m_commitIndex);
     request.set_term(m_currentTerm);
     request.set_leaderid(m_number);
-    m_mu.unlock();
-
     std::promise<void> p;
     m_applied[log.index()] = std::promise<void>();
+    lock.unlock();
 
     for (int i = 0; i < m_peers.size(); ++i)
     {
@@ -501,8 +489,10 @@ grpc::Status Node::PreVote(grpc::ServerContext *ctx, const PreVoteReq *req, PreV
     {
         resp->set_votegranted(true);
         m_votedFor = req->precandidateid();
+        m_status = FOLLOWER;
         resetTick();
-        spdlog::debug("vote for {} at term {}", req->precandidateid(), req->term());
+        asFollower();
+        spdlog::debug("prevote for {} at term {}", req->precandidateid(), req->term());
     }
     else
         resp->set_votegranted(false);

@@ -50,8 +50,8 @@ namespace cppraft
     };
 
     const int TICKINTERVAL = 100;
-    const int HEARTBEATTIMEOUT = 3;
-    const int LEADERTIMEOUT = 5;
+    const int HEARTBEATTIMEOUT = 5;
+    const int LEADERTIMEOUT = 15;
 
     struct peerConfig
     {
