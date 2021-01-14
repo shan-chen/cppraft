@@ -30,22 +30,16 @@ void Node::Start()
     LogEntry log;
     log.set_term(0);
     log.set_index(0);
-    log.set_payload("");
+    log.clear_payload();
     m_logs.push_back(log);
 
     for (auto &peer : m_peers)
     {
-        auto ch = grpc::CreateChannel(peer.address, grpc::InsecureChannelCredentials());
-        bool success = ch->WaitForConnected(gpr_time_add(
-            gpr_now(GPR_CLOCK_REALTIME),
-            gpr_time_from_seconds(10, GPR_TIMESPAN)));
-        if (success)
-        {
-            peer.stub = std::move(Raft::NewStub(ch));
-            spdlog::info("connected to peer {} {}", peer.number, peer.address);
-        }
-        else
+        peer.stub = std::move(connect(peer.address));
+        if (peer.stub == nullptr)
             spdlog::error("failed to connect to peer {} {}", peer.number, peer.address);
+        else
+            spdlog::info("connected to peer {} {}", peer.number, peer.address);
     }
     resetTick();
     std::thread tick(&Node::Tick, this);
@@ -59,6 +53,7 @@ void Node::Stop()
     if (m_server == nullptr)
         return;
     m_server->Shutdown();
+    m_server = nullptr;
     m_stop = true;
     spdlog::info("node stop");
 }
@@ -106,6 +101,20 @@ void Node::Apply()
     std::unique_lock<std::mutex> lock(m_mu);
     while (m_commitIndex > m_lastApplied)
     {
+        auto type = m_logs[m_lastApplied + 1].payload().type();
+        if (type == AddPeer || type == DelPeer)
+        {
+            PeerInfo peer;
+            bool success = peer.ParseFromString(m_logs[m_lastApplied + 1].payload().payload());
+            if (!success)
+            {
+                spdlog::error("failed to parse peer info {}", m_logs[m_lastApplied + 1].index());
+            }
+            else
+            {
+                m_peers.push_back(Peer(peer.address(), peer.number()));
+            }
+        }
         spdlog::debug("apply {}", m_lastApplied + 1);
         ++m_lastApplied;
         if (m_status == LEADER)
@@ -118,6 +127,18 @@ void Node::Apply()
 std::vector<LogEntry> Node::GetLogs()
 {
     return m_logs;
+}
+
+std::unique_ptr<Raft::Stub> Node::connect(std::string address)
+{
+    auto ch = grpc::CreateChannel(address, grpc::InsecureChannelCredentials());
+    bool success = ch->WaitForConnected(gpr_time_add(
+        gpr_now(GPR_CLOCK_REALTIME),
+        gpr_time_from_seconds(10, GPR_TIMESPAN)));
+    if (success)
+        return Raft::NewStub(ch);
+    else
+        return nullptr;
 }
 
 void Node::resetTick()
@@ -213,7 +234,14 @@ void Node::sendHeartBeat()
 void Node::sendRequestVote(RequestVoteReq req, int i)
 {
     if (m_peers[i].stub == nullptr)
-        return;
+    {
+        m_peers[i].stub = std::move(connect(m_peers[i].address));
+        if (m_peers[i].stub == nullptr)
+        {
+            spdlog::error("failed to connect to peer {} {}", m_peers[i].number, m_peers[i].address);
+            return;
+        }
+    }
     RequestVoteResp resp;
     grpc::ClientContext ctx;
     grpc::Status s = m_peers[i].stub->RequestVote(&ctx, req, &resp);
@@ -242,7 +270,14 @@ void Node::sendRequestVote(RequestVoteReq req, int i)
 void Node::sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat)
 {
     if (m_peers[i].stub == nullptr)
-        return;
+    {
+        m_peers[i].stub = std::move(connect(m_peers[i].address));
+        if (m_peers[i].stub == nullptr)
+        {
+            spdlog::error("failed to connect to peer {} {}", m_peers[i].number, m_peers[i].address);
+            return;
+        }
+    }
     req.set_prevlogindex(m_nextIndex[i] - 1);
     req.set_prevlogterm(m_logs[m_nextIndex[i] - 1].term());
     req.clear_entries();
@@ -253,7 +288,9 @@ void Node::sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat)
             auto curr = req.add_entries();
             curr->set_term(m_logs[j].term());
             curr->set_index(m_logs[j].index());
-            curr->set_payload(m_logs[j].payload());
+            auto payload = curr->mutable_payload();
+            payload->set_payload(m_logs[j].payload().payload());
+            payload->set_type(m_logs[j].payload().type());
         }
     }
     AppendEntriesResp resp;
@@ -289,7 +326,14 @@ void Node::sendAppendEntries(AppendEntriesReq req, int i, bool isHeartBeat)
 void Node::sendPreVote(PreVoteReq req, int i)
 {
     if (m_peers[i].stub == nullptr)
-        return;
+    {
+        m_peers[i].stub = std::move(connect(m_peers[i].address));
+        if (m_peers[i].stub == nullptr)
+        {
+            spdlog::error("failed to connect to peer {} {}", m_peers[i].number, m_peers[i].address);
+            return;
+        }
+    }
     PreVoteResp resp;
     grpc::ClientContext ctx;
     grpc::Status s = m_peers[i].stub->PreVote(&ctx, req, &resp);
@@ -311,6 +355,7 @@ void Node::sendPreVote(PreVoteReq req, int i)
         {
             m_status = CANDIDATE;
             lock.unlock();
+            resetTick();
             asCandidate();
         }
     }
@@ -374,7 +419,19 @@ grpc::Status Node::AppendEntries(grpc::ServerContext *ctx, const AppendEntriesRe
     if (req->entries().size() == 0)
     {
         resp->set_success(true);
+        if (req->leadercommit() > m_commitIndex)
+        {
+            m_commitIndex = std::min(req->leadercommit(), m_logs.back().index());
+            lock.unlock();
+            std::thread t(&Node::Apply, this);
+            t.detach();
+        }
         return grpc::Status::OK;
+    }
+
+    for (auto &log : req->entries())
+    {
+        spdlog::debug("receive appendentries {}", log.index());
     }
 
     if (m_logs.size() < req->prevlogindex() || m_logs[req->prevlogindex()].term() != req->prevlogterm())
@@ -451,7 +508,9 @@ grpc::Status Node::ClientCommandRequest(grpc::ServerContext *ctx, const ClientCo
     std::unique_lock<std::mutex> lock(m_mu);
     log.set_term(m_currentTerm);
     log.set_index(m_logs.size());
-    log.set_payload(req->payload());
+    auto payload = log.mutable_payload();
+    payload->set_payload(req->payload());
+    payload->set_type(req->type());
     m_logs.push_back(log);
     AppendEntriesReq request;
     request.set_leadercommit(m_commitIndex);

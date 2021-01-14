@@ -32,15 +32,16 @@ int main(int argc, char *argv[])
     }
 
     std::unique_ptr<cppraft::Node> node(new cppraft::Node(address, number, peers));
-    node->Start();
+    std::thread t([&]() { node->Start(); });
+    t.detach();
 
     // for test
-    std::this_thread::sleep_for(std::chrono::seconds(60));
+    std::this_thread::sleep_for(std::chrono::seconds(30));
     node->Stop();
     auto logs = node->GetLogs();
     for (auto &log : logs)
     {
-        spdlog::debug("log {} : {}", log.index(), log.payload());
+        spdlog::debug("log {} : {}", log.index(), log.payload().payload());
     }
     return 0;
 }

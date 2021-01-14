@@ -21,7 +21,7 @@ namespace cppraft
         int number;
         std::unique_ptr<Raft::Stub> stub;
         Peer(){};
-        Peer(std::string a, int n) : address(a), number(n){};
+        Peer(std::string a, int n) : address(a), number(n), stub(nullptr){};
         Peer(Peer &&other)
         {
             address = other.address;

@@ -7,10 +7,21 @@ service Raft {
     rpc PreVote (PreVoteReq) returns (PreVoteResp);
 }
 
+enum PayloadType {
+    AddPeer=0;
+    DelPeer=1;
+    Normal=2;
+}
+
+message Payload {
+    PayloadType type=1;
+    bytes payload=2;
+}
+
 message LogEntry {
     int32 term=1;
     int32 index=2;
-    bytes payload=3;
+    Payload payload=3;
 }
 
 message AppendEntriesReq {
@@ -40,7 +51,8 @@ message RequestVoteResp {
 }
 
 message ClientCommandRequestReq {
-    bytes payload=1;
+    PayloadType type=1;
+    bytes payload=2;
 }
 
 message ClientCommandRequestResp {
@@ -57,6 +69,11 @@ message PreVoteReq {
 message PreVoteResp {
     int32 term=1;
     bool voteGranted=2;
+}
+
+message PeerInfo {
+    int32 number=1;
+    string address=2;
 }
 
 //protoc -I ./ --cpp_out=. ./message.proto

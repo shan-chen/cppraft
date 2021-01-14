@@ -23,6 +23,7 @@ void Client::Request(std::string payload)
     ClientCommandRequestReq req;
     ClientCommandRequestResp resp;
     req.set_payload(payload);
+    req.set_type(Normal);
     for (auto &addr : servers)
     {
         grpc::ClientContext ctx;

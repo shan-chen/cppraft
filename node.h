@@ -34,6 +34,7 @@ namespace cppraft
         std::vector<LogEntry> GetLogs();
 
     private:
+        std::unique_ptr<Raft::Stub> connect(std::string address);
         void resetTick();
         void startRpc(std::promise<void> &p);
         void asCandidate();
